@@ -1,0 +1,592 @@
+---
+title: "IPL Win Prediction"
+author: "Abdullah Farouk"
+date: '2017-12-09'
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require("knitr")
+opts_knit$set(root.dir = "~/Desktop/Stat 538A/ipl-3")
+```
+
+
+```{r}
+#Data Initialization
+library(dplyr)
+library(tidyverse)
+library(forcats)
+library(ggplot2)
+library(sjPlot)
+library(car)
+library(zoo)
+library(dummies)
+
+#setwd("~/Desktop/Stat 538A/ipl-3")
+
+#Team and player information
+match_data <- tbl_df(read.csv(file = 'matches.csv'))
+match_data <- na.omit(match_data[,1:17])   #checks and removes NA's
+match_data$season <- factor(match_data$season)   #Make seasons a factor
+match_data$win_by_runs <- factor(match_data$win_by_runs)  #Make win by runs a factor
+match_data$win_by_wickets <- factor(match_data$win_by_wickets)  #Make win by wickets a factor
+match_data <- match_data %>% arrange(season)  #Arrange data by season
+
+#Focus on RCB
+rcb <- filter(match_data, as.character(team1) == "Royal Challengers Bangalore" | as.character(team2) == "Royal Challengers Bangalore")
+
+
+
+```
+
+
+## Univariate Data Analysis
+
+```{r}
+#Compute Win Percentage
+wins <- group_by(rcb, season, winner == "Royal Challengers Bangalore")
+wins <- summarise(wins, count = n()) #, win_perc = round(count/nrow(wins), digits = 2)
+
+
+
+#Diagrams of win to loss ratios
+{png(filename="Win to loss Ratio.png")
+ggplot(wins, aes(x = factor(season), y = count, fill = `winner == "Royal Challengers Bangalore"`))+
+  geom_bar(stat="identity",position="dodge")+
+  #scale_fill_discrete(name="team_name",
+                      #breaks=c(1, 2),
+                      #labels=c("Male", "Female"))+
+  xlab("Season")+ylab("Count")+ggtitle("Games Won Vs Lost")
+
+barplot(wins$count, names.arg = wins$season)
+boxplot(count ~ `winner == "Royal Challengers Bangalore"`, data = wins, main = 'Games Won vs Lost', ylab = 'Frequencies') 
+dev.off()}
+
+
+#Teams they won the most against
+opponent <- select(rcb, team1, team2, winner)
+opponent <- filter(opponent, winner == "Royal Challengers Bangalore")
+opponent$team1 <- as.character(opponent$team1)
+opponent$team2 <- as.character(opponent$team2)
+opponent$winner <- as.character(opponent$winner)
+str(opponent)
+
+loosing_team <- c()
+
+for (i in 1 : nrow(opponent)) {
+  if(opponent$team1[i] == "Royal Challengers Bangalore") {
+    loosing_team[i] <- opponent$team2[i]
+  }
+  else {
+    loosing_team[i] <- opponent$team1[i]
+  }
+  print(loosing_team[i])
+}
+loosing_team <- factor(loosing_team)
+opponent <- mutate(opponent, team_name = loosing_team)
+opponent_1 <- group_by(opponent, team_name) 
+opponent_1 <- summarize(opponent_1, won = n(), perc = round(won/length(opponent$winner), digits = 2))
+
+
+#Teams they lost the most against
+defeat <- select(rcb, team1, team2, winner)
+defeat <- filter(defeat, winner != "Royal Challengers Bangalore")
+defeat$team1 <- as.character(defeat$team1)
+defeat$team2 <- as.character(defeat$team2)
+defeat$winner <- as.character(defeat$winner)
+str(defeat)
+
+defeated_by <- c()
+
+for (i in 1 : nrow(defeat)) {
+  if(defeat$team1[i] == "Royal Challengers Bangalore") {
+    defeated_by[i] <- defeat$team2[i]
+  }
+  else {
+    defeated_by[i] <- defeat$team1[i]
+  }
+  print(defeated_by[i])
+}
+defeated_by <- factor(defeated_by)
+defeat <- mutate(defeat, team_name = defeated_by)
+defeat_1 <- group_by(defeat, team_name) 
+defeat_1 <- summarize(defeat_1, lost = n(), perc = round(lost/length(defeat$winner), digits = 2))
+
+
+#Opposition win loss record breakdown
+opposing_team <- full_join(opponent_1[,1:2], defeat_1[,1:2]) 
+opposing_team[is.na(opposing_team)] <- 0  #replace NA values with 0's. 
+opposing_team <- group_by(opposing_team, team_name)
+opposing_team_1 <- gather(opposing_team,'Type', 'count', 2:3)
+
+#plot
+
+{png(filename="Opposition Ratio Breakdown.png")
+ggplot(opposing_team_1,aes(x = factor(team_name), y = count, fill = Type))+
+  geom_bar(stat="identity",position="dodge")+
+  #scale_fill_discrete(name="team_name",
+                      #breaks=c(1, 2),
+                      #labels=c("Male", "Female"))+
+  xlab("Team")+ylab("Count")+ggtitle("Teams RCB has Played Against")
+dev.off()}
+
+
+
+
+#Test of significance to of win/loss record against different teams
+
+#Obtain row sums first
+r <- c()
+for (i in 1:nrow(opposing_team)) {
+  r[i] <- c(opposing_team$won[i] + opposing_team$lost[i])
+}
+
+#obtain column sums next
+cum_win <- sum(opposing_team$won)
+cum_loss <- sum(opposing_team$lost)
+N <- cum_loss + cum_win
+
+#Test of significance
+observed_1 <- opposing_team$won
+expected_1 <- c()
+observed_2 <- opposing_team$lost
+expected_2 <- c()
+
+for (i in 1: nrow(opposing_team)) {
+  expected_1[i] <- (r[i]*cum_win)/N
+  expected_2[i] <- (r[i]*cum_loss)/N
+}
+
+#Test statistic
+chisq_stat_1 <- sum((observed_1 - expected_1)^2/expected_1) + sum((observed_2 - expected_2)^2/expected_2)
+p_value_1 <- 1 - pchisq(chisq_stat_1, 12)
+#suggests difference is significant
+
+
+#Toss win and Toss Decision
+toss_wins <- group_by(rcb, season, winner == "Royal Challengers Bangalore", toss_winner == "Royal Challengers Bangalore", toss_decision)
+toss_wins <- filter(toss_wins, `winner == "Royal Challengers Bangalore"`== TRUE,`toss_winner == "Royal Challengers Bangalore"`== TRUE)
+toss_wins <- summarise(toss_wins, counts = n())
+
+#Boxplot of toss outcomes
+boxplot(counts ~ toss_decision, data = toss_wins, main = 'Toss Decision', ylab = 'Number of games Won') 
+
+
+#Macro overview to compute chi square statistic
+toss_wins_1 <- group_by(rcb, winner == "Royal Challengers Bangalore", toss_winner == "Royal Challengers Bangalore", toss_decision)
+toss_wins_1 <- filter(toss_wins_1,`toss_winner == "Royal Challengers Bangalore"`== TRUE)
+toss_wins_1 <- summarise(toss_wins_1, counts = n())
+toss_wins_1 <- spread(toss_wins_1, toss_decision, counts)
+
+#Test of significance of Toss decision
+observed_3 <- toss_wins_1$bat
+observed_4 <- toss_wins_1$field
+expected_3 <- c()
+expected_4 <- c()
+
+#Obtain row sums first
+r_1 <- c()
+for (i in 1:nrow(toss_wins_1)) {
+  r_1[i] <- c(toss_wins_1$bat[i] + toss_wins_1$field[i])
+}
+
+#obtain column sums next
+cum_bat <- sum(toss_wins_1$bat)
+cum_field <- sum(toss_wins_1$field)
+N_1 <- cum_bat + cum_field
+
+for (i in 1: nrow(toss_wins_1)) {
+  expected_3[i] <- (r_1[i]*cum_bat)/N_1
+  expected_4[i] <- (r_1[i]*cum_field)/N_1
+}
+
+#Compute test statistic
+chisq_stat_2 <- sum((observed_3 - expected_3)^2/expected_3) + sum((observed_4 - expected_4)^2/expected_4)
+p_value_2 <- 1 - pchisq(chisq_stat_2, 1)
+#Suggests toss decision is not an influencial factor
+
+#Number of wickets in hand
+wicket_win <- group_by(rcb, winner == "Royal Challengers Bangalore", win_by_wickets) 
+wicket_win <- summarize(wicket_win, count = n())
+wicket_win <- filter(wicket_win, `winner == "Royal Challengers Bangalore"` == TRUE, count >= 7)
+
+ggplot(wicket_win, aes(x = factor(win_by_wickets), y = count, fill = win_by_wickets))+
+  geom_bar(stat="identity",position="dodge")+
+  #scale_fill_discrete(name="team_name",
+                      #breaks=c(1, 2),
+                      #labels=c("Male", "Female"))+
+  xlab("Wickets")+ylab("Number of games won")+ggtitle("Number of Wickets in Hand")
+
+barplot(wicket_win$count, names.arg = wicket_win$win_by_wickets, xlab = "wickets", ylab = 'Number of games won', main = "Number of Wickets in Hand")
+ 
+
+
+#City wins
+city_wins <- group_by(rcb, winner == "Royal Challengers Bangalore", city) 
+city_wins <- summarize(city_wins, count = n())
+#city_wins <- filter(city_wins, `winner == "Royal Challengers Bangalore"` == TRUE)
+city_wins_1 <- spread(city_wins, `winner == "Royal Challengers Bangalore"`, count, fill = 0)
+barplot(city_wins$count, names.arg = city_wins$city)
+
+#Test of significance
+observed_5 <- c(city_wins_1$`FALSE`)
+observed_6 <- c(city_wins_1$`TRUE`)
+expected_5 <- c()
+expected_6 <- c()
+
+#Obtain row sums first
+r_2 <- c()
+for (i in 1:nrow(city_wins_1)) {
+  r_2[i] <- c(city_wins_1$`FALSE`[i] + city_wins_1$`TRUE`[i])
+}
+
+#obtain column sums next
+cum_false <- sum(city_wins_1$`FALSE`)
+cum_true <- sum(city_wins_1$`TRUE`)
+N_3 <- cum_false + cum_true
+
+for (i in 1: nrow(city_wins_1)) {
+  expected_5[i] <- (r_2[i]*cum_false)/N_3
+  expected_6[i] <- (r_2[i]*cum_true)/N_3
+}
+
+#Compute test statistic
+chisq_stat_3 <- sum((observed_5 - expected_5)^2/expected_5) + sum((observed_6 - expected_6)^2/expected_6)
+
+p_value_3 <- 1 - pchisq(chisq_stat_3, 24)
+#Suggests differences in wins across different cities is not significant
+
+
+
+```
+
+
+
+##Conformitory analysis
+
+```{r}
+
+#fit lm model to data
+fit1<- lm(win_streak ~ -winner + city + season + toss_winner + toss_decision + result + win_by_runs + win_by_wickets, data = rcb)
+fit2 <- step(fit1, direction = 'backward')
+summary(fit2)
+
+install.packages('glmnet')
+library(glmnet)
+
+
+ss <- model.matrix(win_streak ~ . -dl_applied -date -id -team2 -team1  -umpire2, data = rcb)
+fit4 <- glmnet(x = ss, y = as.factor(win_streak), family = 'binomial', alpha = 1)
+str(fit4)
+ff <- summary(fit4)
+coef(fit4)
+str(ff)
+step(fit4, direction = 'backward')
+```
+
+
+```{r}
+#Define variable to capture opponent
+opp <- c()
+for ( i in 1:nrow(rcb)) {
+  if(as.character(rcb$winner[i]) == "Royal Challengers Bangalore") {
+    if(as.character(rcb$team1[i]) == "Royal Challengers Bangalore") {
+      opp[i] <- as.character(rcb$team2[i])
+    }
+    else if(as.character(rcb$team1[i]) != "Royal Challengers Bangalore") {
+      opp[i] <- as.character(rcb$team1[i])
+     }
+    }
+    else {
+      opp[i] <- as.character(rcb$winner[i])
+  }
+}
+
+#Make opp a factor
+opp <- factor(opp)
+rcb <- mutate(rcb, opponent_faced = opp)
+length(which(as.character(rcb$opponent_faced) == "Delhi Daredevils"))
+
+
+#Convert Toss winner into a binary variable and consider only those decisions where rcb won the toss.
+toss_winner_1 <- c(as.character(rcb$toss_winner) == "Royal Challengers Bangalore")
+
+#Capture decision to bat or field as a resulf of winning the toss
+toss_outcome <- c()
+for (i in 1 : length(toss_winner_1)) {
+  if(toss_winner_1[i] == TRUE) {
+    toss_outcome[i] <- as.character(rcb$toss_decision[i])
+  }
+  else {
+    toss_outcome[i] <- 0 #This makes entries corresponding to games where they lost the toss 0. Easier to work with in terms of computation.
+  }
+}
+  
+#Add toss outcome to dataset
+toss_outcome <- factor(toss_outcome)
+rcb <- mutate(rcb, toss = toss_outcome)
+
+
+#Collapse win by wickets and win by runs columns
+rcb <- mutate(rcb, win_by_wickets = fct_lump(win_by_wickets, n = 4))
+rcb <- mutate(rcb, win_by_runs = fct_lump(win_by_runs, n = 4))
+rcb <- mutate(rcb, player_of_match = fct_lump(player_of_match, n = 4))
+rcb <- mutate(rcb, opponent_faced = fct_lump(opponent_faced, n = 4))
+rcb <- mutate(rcb, city = fct_lump(city, n = 4))
+rcb <- mutate(rcb, umpire1 = fct_lump(umpire1, n = 5))
+rcb <- mutate(rcb, umpire2 = fct_lump(umpire2, n = 5))
+
+
+#Copy RCB dataset
+rcb_1 <- rcb
+
+
+#Create dataset with only relavent variables
+rcb_test <- as.data.frame(cbind(rcb_1$city, rcb_1$date, rcb_1$season, rcb$toss, rcb_1$opponent_faced, rcb_1$umpire1, rcb$venue, rcb_1$result, rcb_1$dl_applied, rcb_1$umpire2, rcb_1$win_by_runs, rcb_1$win_by_wickets, rcb_1$player_of_match))
+#This results in me converting my variables into integers. It uses the integer corresponding to the level of the factor in place of the name of the factor in the matrix. 
+
+
+#Check for associations between my variables
+sjt.corr(rcb_test)
+#The analysis suggests city and venue, date and season, date and umpire2, season and umpire2,  umpire2 and player of match and win by runs and win by wickets are highly correlated. 
+
+#Correcting for correlations
+rcb_1 <- as.data.frame(cbind(rcb_1$city, rcb$toss, rcb_1$opponent_faced, rcb_1$result, rcb_1$dl_applied, rcb$umpire1, rcb_1$umpire2, rcb_1$win_by_wickets, rcb_1$player_of_match))
+
+#Check for associations between my variables
+sjt.corr(rcb_1)
+#Much better!
+
+
+```
+
+
+
+#Dummy Variable Creation
+```{r}
+#Convert categorical variables into dummy variables. I use only variables from rcb_1 as they have low correlation between each other. 
+rcb_dummy_1 <- data.frame(dummy(rcb$city), dummy(rcb$toss), dummy(rcb$opponent_faced), dummy(rcb$result), dummy(rcb$dl_applied), dummy(rcb$umpire1), dummy(rcb$umpire2), dummy(rcb$win_by_wickets), dummy(rcb$player_of_match))
+
+colnames(rcb_dummy_1) #This produces more dummy variables and splits 
+
+rcb_dummy <- model.matrix(~ city + toss + opponent_faced + result + dl_applied + umpire1 + umpire2 + win_by_wickets + player_of_match - 1, data = rcb)
+
+colnames(rcb_dummy) #Creates only 2 levels for predictor toss and one for dl_applied.
+```
+
+
+
+
+#Logistic Regression
+```{r}
+#Define binary response variable
+win_streak <- c(as.character(rcb$winner) == "Royal Challengers Bangalore")
+length(which(win_streak==TRUE))/length(win_streak)
+
+#Fit logistic regression model
+fit_1 <- glm(win_streak ~ ., family = 'quasibinomial', data = rcb_1)
+fit_2 <- glm(win_streak ~ ., family = 'binomial', data = rcb_1)
+#Indicates some degree of underdispersion
+summary(fit_2)
+
+#Determine which variables should be kept
+step(fit_2, direction = 'both')
+drop1(object = fit_1, test = 'Chisq')
+#identifies v1 and v9 as the most important variables.
+
+
+#Which model fits better?
+fit_3 <- glm(win_streak ~ V1 + V2 + V3 + V9, family = 'quasibinomial', data = rcb_1)
+fit_4 <- glm(win_streak ~  V1 + V9, family = 'quasibinomial', data = rcb_1)
+anova(fit_3,fit_4, test = "Chisq")
+summary(fit_3)
+
+#Repeat using dummy variables
+colnames(rcb_dummy)
+fit_5 <- glm(win_streak ~., family = 'quasibinomial', data = as.data.frame(rcb_dummy))
+#fit_6 <- glm(win_streak ~., family = 'binomial', data = as.data.frame(rcb_dummy))
+summary(fit_5)
+#Determine which variables should be kept
+drop1(object = fit_5, test = 'Chisq')
+#identifies player_of_matchJH Kallis and player_of_matchOther as important. 
+
+
+#Testing for effects of interest
+fit_6 <- glm(win_streak ~ cityBangalore + tossfield + `opponent_facedMumbai Indians` +  player_of_matchOther, family = 'quasibinomial', data = as.data.frame(rcb_dummy))
+
+fit_7 <- glm(win_streak ~ player_of_matchOther, family = 'quasibinomial', data = as.data.frame(rcb_dummy))
+summary(fit_6)
+summary(fit_7)
+
+#which model fits better?
+anova(fit_7,fit_6, test = "F")
+#suggests we can work with fit_6. Thus we conclude that the following variables affect the probability of rcb winning a game. They are playing a game in Bangalore, fielding upon winning the toss, the identity of the first umpire and the player of the match being Kallis or someone else. 
+
+```
+
+
+
+
+```{r}
+#Who won the award when RCB lost games
+man_of_match <- filter(match_data, as.character(team1) == "Royal Challengers Bangalore" | as.character(team2) == "Royal Challengers Bangalore")
+man_of_match_1 <- filter(man_of_match, as.character(winner) != "Royal Challengers Bangalore")
+man_of_match_1 <- count(man_of_match_1, player_of_match)
+colnames(man_of_match_1) <- c('player_of_match','Games RCB lost')
+sum(man_of_match_1$`Games RCB lost`)
+
+#Who won the award when RCB won games
+man_of_match_2 <- filter(man_of_match, as.character(winner) == "Royal Challengers Bangalore")
+man_of_match_3 <- count(man_of_match_2, player_of_match)
+colnames(man_of_match_3) <- c('player_of_match','Games RCB won')
+sum(man_of_match_3$`Games RCB won`)
+
+#Who won it the most under both circumstances
+man_of_match_4 <- inner_join(man_of_match_1, man_of_match_3, by = "player_of_match")
+colnames(man_of_match_3) <- c('player_of_match','Games RCB won')
+```
+
+
+
+```{r}
+#Model Diagnostics
+
+#Checking how well the model fits the data
+residualPlots(fit_6) #Doesnt indicate non linear trends in data
+marginalModelPlot(fit_6)
+
+#Check for influential points
+influenceIndexPlot(fit_6, id.n = 3)
+binomial_influence <- influencePlot(fit_6, col = 'red', id.n = 3) 
+
+
+#Removing observations 91 and 128 from the dataset
+fit_6_new <- update(fit_6, subset= c(-91,-128))
+compare <- compareCoefs(fit_6, fit_6_new)
+marginalModelPlot(fit_6_new)
+?marginalModelPlot
+
+
+```
+
+#Modelling wins as count data
+```{r}
+#Use cumsum to create a cumulative sum of wins
+#Count of number of wins per season
+ww <- group_by(rcb, season, winner == "Royal Challengers Bangalore") 
+ww <- summarize(ww, count = n())
+ww <- spread(ww, `winner == "Royal Challengers Bangalore"`, count, fill = 0)
+
+#Count number of games played each season
+games_played <- group_by(rcb, season) 
+games_played <- summarize(games_played, count = n())
+
+#Vector of counts 
+win_count_1 <- c(rep(4,14),rep(9,16), rep(8,16), rep(10,16), rep(8,15), rep(9,16), rep(5,14), rep(8,16), rep(9,16), rep(3,13))
+
+
+#Fit poisson model using regressors in rcb_1
+fit_8 <- glm(win_count_1 ~., family = 'quasipoisson', data = rcb_1)
+summary(fit_8)
+#value indicates underdispersion. Hence a poisson model maybe inappropriate in this context. 
+#Suggests V9 is important in predicting win counts
+
+
+#Determine which variables should be kept
+drop1(object = fit_8, test = 'Chisq')
+#identifies v9 as the most important variables
+
+#Which model fits better?
+fit_9 <- glm(win_count_1 ~ V1 + V2 + V3 + V9, family = 'quasipoisson', data = rcb_1)
+fit_10 <- glm(win_count_1 ~ V9, family = 'quasipoisson', data = rcb_1)
+anova(fit_9, fit_10, test = "F")
+#Suggest we can work with fit_9. Sufficient evidence to reject H0 at the 10% level
+
+
+#Use dummy variables
+#Convert categorical variables into dummy variables. I use only variables from rcb_1 as they have low correlation between each other. 
+
+#Method 1 of creating dummies
+rcb_dummy_1 <- data.frame(dummy(rcb$city), dummy(rcb$toss), dummy(rcb$opponent_faced), dummy(rcb$result), dummy(rcb$dl_applied), dummy(rcb$umpire1), dummy(rcb$umpire2), dummy(rcb$win_by_wickets), dummy(rcb$player_of_match))
+
+colnames(rcb_dummy_1) #This produces more dummy variables and splits 
+
+#Method 2 of creating dummies
+rcb_dummy <- model.matrix(~ city + toss + opponent_faced + result + dl_applied + umpire1 + umpire2 + win_by_wickets + player_of_match - 1, data = rcb)
+
+colnames(rcb_dummy) #Creates only 2 levels for predictor toss and one for dl_applied. Feel this is more appropriate and easier to interpret.
+
+
+#Fit model
+fit_11 <- glm(win_count_1 ~., family = 'quasipoisson', data = as.data.frame(rcb_dummy))
+summary(fit_11) #Dispersion parameter is 0.6260053
+#Suggests the following are significant. `umpire2SJA Taufel`, `umpire2S Ravi`,`umpire2RJ Tucker`, `umpire2RB Tiffin`, cityBangalore and player_of_matchOther
+
+drop1(object = fit_11, test = 'Chisq')
+
+#Testing whether or not I can include Bangalore and field in my model
+fit_12 <- glm(win_count_1 ~ `opponent_facedMumbai Indians` + `tossfield` + cityBangalore + `umpire2RB Tiffin`+ `umpire2RJ Tucker` + `umpire2SJA Taufel` + `umpire2S Ravi` + player_of_matchOther, family = 'quasipoisson', data = as.data.frame(rcb_dummy))
+
+fit_13 <- glm(win_count_1 ~ `umpire2RB Tiffin`+ `umpire2RJ Tucker` + `umpire2SJA Taufel` + `umpire2S Ravi` + player_of_matchOther, family = 'quasipoisson', data = as.data.frame(rcb_dummy))
+summary(fit_12)
+summary(fit_13)
+
+#which model fits better?
+anova(fit_13,fit_12, test = "F")
+#suggest that we should work with fit_13
+
+
+```
+
+
+## Model Diagnostics
+```{r}
+#Model Diagnostics
+
+#Checking how well the model fits the data
+#residualPlots(fit_6) #Doesnt indicate non linear trends in data
+marginalModelPlot(fit_12)
+
+#Check for influential points
+influenceIndexPlot(fit_12, id.n = 3)
+poisson_influence <- influencePlot(fit_12, col = 'red', id.n = 3) 
+
+#Identifies points 143, 145 and 98 as influential. They have the largest studentized residuals and the largest cook's distance of all the points identified as potentially influential.
+
+
+#Removing observations 91 and 128 from the dataset
+fit_12_new <- update(fit_12, subset= c(-4, -48,-145))
+compare_1 <- compareCoefs(fit_12, fit_12_new)
+marginalModelPlot(fit_12_new)
+bu?marginalModelPlot
+
+
+```
+
+
+
+## Studying effects of umpires
+```{r}
+#Who umpired the most when RCB lost games
+umpire <- filter(rcb, winner != "Royal Challengers Bangalore")
+umpire_1 <- count(umpire, umpire1)
+umpire_2 <- count(umpire, umpire2)
+colnames(umpire_1) <- c('umpire1', "Games RCB lost")
+colnames(umpire_2) <- c('umpire2', "Games RCB lost")
+
+#Who won the award when RCB won games
+umpire_3 <- filter(rcb, winner == "Royal Challengers Bangalore")
+umpire_4 <- count(umpire_3, umpire1)
+umpire_5 <- count(umpire_3, umpire2)
+colnames(umpire_4) <- c('umpire1', "Games RCB won")
+colnames(umpire_5) <- c('umpire2', "Games RCB won")
+
+#Who won it the most under both circumstances
+umpire1_combined <- inner_join(umpire_1, umpire_4, by = 'umpire1')
+umpire2_combined <- inner_join(umpire_2, umpire_5, by = 'umpire2')
+```
+
+
+
+
